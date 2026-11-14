@@ -41,6 +41,7 @@ When the interface loads, it syncs enabled documents to the backend for indexing
 ## API endpoints
 
 - `POST /index`: accepts `{"documents": [{"id": "...", "name": "...", "content": "...", "encoding": "text"}]}`, chunks enabled documents, and persists originals, chunks, and embeddings. Returns `{"indexed_chunks": n}`; responds with `422` for invalid documents or documents without readable text, and `502` if the embedding API fails. The interface calls it on startup and when the knowledge base changes.
+- `GET /graph`: returns `{"nodes": [...], "edges": [...]}` for indexed documents. Nodes have `id`, `label`, and `type`; edges have `id`, `source`, `target`, `label`, and `evidence` (document ID/name, item title, and optional source URL). Repeat `document_ids` to filter, for example `/graph?document_ids=id-1&document_ids=id-2`; omitting the filter returns all indexed documents. The local, token-free rules use structured Markdown metadata (`Tipo`, `Projeto`, `Produto`, `Hierarquia`, and `Tags`) and cache the result during indexing. This first version does not infer entities from arbitrary prose. Returns `409` if a requested document is not indexed.
 - `POST /ask`: accepts `{"question": "...", "document_ids": [...]}` and retrieves stored chunks; missing or unindexed documents return `409`.
 - `DELETE /documents?document_id=...`: removes a document, its chunks, and its associated vectors from the local database.
 
