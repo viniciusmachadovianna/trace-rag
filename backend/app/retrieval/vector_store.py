@@ -7,6 +7,7 @@ from pathlib import Path
 from sklearn.metrics.pairwise import cosine_similarity
 from google.genai import types
 from app.config import client
+from app.retrieval.entity_graph import merge_document_graphs, serialize_document_graph
 
 
 EMBEDDING_MODEL = "gemini-embedding-001"
@@ -132,6 +133,34 @@ def _delete_cached_embeddings(connection: sqlite3.Connection, chunk_ids: set[str
         )
 
 
+def _ensure_document_graphs_table(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS document_graphs (
+            document_id TEXT PRIMARY KEY,
+            graph_json TEXT NOT NULL
+        )
+        """
+    )
+
+
+def _store_document_graphs(
+    connection: sqlite3.Connection,
+    documents: list[dict],
+) -> None:
+    _ensure_document_graphs_table(connection)
+    connection.executemany(
+        """
+        INSERT OR REPLACE INTO document_graphs (document_id, graph_json)
+        VALUES (?, ?)
+        """,
+        [
+            (document["id"], serialize_document_graph(document))
+            for document in documents
+        ],
+    )
+
+
 def _index_is_current(
     documents: list[dict],
     chunks: list[dict],
@@ -223,6 +252,9 @@ def persist_documents(documents: list[dict], chunks: list[dict]) -> int:
     chunk_ids = [_chunk_id(chunk) for chunk in chunks]
     _get_chunk_embeddings(chunks)
     if _index_is_current(documents, chunks, chunk_ids):
+        with closing(sqlite3.connect(VECTOR_STORE_PATH)) as connection:
+            with connection:
+                _store_document_graphs(connection, documents)
         return len(chunks)
 
     _ensure_store_directory()
@@ -249,6 +281,7 @@ def persist_documents(documents: list[dict], chunks: list[dict]) -> int:
             )
             """
         )
+        _ensure_document_graphs_table(connection)
 
         with connection:
             previous_chunk_ids = set()
@@ -276,6 +309,7 @@ def persist_documents(documents: list[dict], chunks: list[dict]) -> int:
                     "DELETE FROM document_chunks WHERE document_id = ?",
                     (document["id"],),
                 )
+            _store_document_graphs(connection, documents)
 
             new_chunk_ids = set()
             connection.executemany(
@@ -318,6 +352,11 @@ def delete_indexed_document(document_id: str) -> None:
             )
         ]
         with connection:
+            if "document_graphs" in tables:
+                connection.execute(
+                    "DELETE FROM document_graphs WHERE document_id = ?",
+                    (document_id,),
+                )
             connection.execute(
                 "DELETE FROM document_chunks WHERE document_id = ?",
                 (document_id,),
@@ -325,6 +364,114 @@ def delete_indexed_document(document_id: str) -> None:
             connection.execute("DELETE FROM documents WHERE id = ?", (document_id,))
             if chunk_ids:
                 _delete_cached_embeddings(connection, set(chunk_ids))
+
+
+def get_indexed_document_graph(document_ids: list[str] | None = None) -> dict:
+    if not VECTOR_STORE_PATH.exists():
+        if document_ids:
+            raise MissingIndexedDocumentsError("One or more documents have not been indexed.")
+        return {"nodes": [], "edges": []}
+
+    requested_ids = list(dict.fromkeys(document_ids or []))
+    with closing(sqlite3.connect(VECTOR_STORE_PATH)) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        if "documents" not in tables:
+            if requested_ids:
+                raise MissingIndexedDocumentsError("One or more documents have not been indexed.")
+            return {"nodes": [], "edges": []}
+
+        if requested_ids:
+            document_rows = []
+            for start in range(0, len(requested_ids), 500):
+                batch = requested_ids[start:start + 500]
+                placeholders = ",".join("?" for _ in batch)
+                document_rows.extend(
+                    connection.execute(
+                        f"SELECT id, name FROM documents WHERE id IN ({placeholders})",
+                        batch,
+                    ).fetchall()
+                )
+            document_ids_to_load = requested_ids
+            found_ids = {row[0] for row in document_rows}
+            if found_ids != set(requested_ids):
+                raise MissingIndexedDocumentsError("One or more documents have not been indexed.")
+        else:
+            document_rows = connection.execute(
+                "SELECT id, name FROM documents ORDER BY id"
+            ).fetchall()
+            document_ids_to_load = [row[0] for row in document_rows]
+
+        if not document_ids_to_load:
+            return {"nodes": [], "edges": []}
+
+        _ensure_document_graphs_table(connection)
+        graph_rows = []
+        for start in range(0, len(document_ids_to_load), 500):
+            batch = document_ids_to_load[start:start + 500]
+            placeholders = ",".join("?" for _ in batch)
+            graph_rows.extend(
+                connection.execute(
+                    f"""
+                    SELECT document_id, graph_json
+                    FROM document_graphs
+                    WHERE document_id IN ({placeholders})
+                    """,
+                    batch,
+                ).fetchall()
+            )
+
+        cached_ids = {row[0] for row in graph_rows}
+        missing_ids = [
+            document_id
+            for document_id in document_ids_to_load
+            if document_id not in cached_ids
+        ]
+        if missing_ids:
+            missing_documents = []
+            for start in range(0, len(missing_ids), 500):
+                batch = missing_ids[start:start + 500]
+                placeholders = ",".join("?" for _ in batch)
+                missing_documents.extend(
+                    connection.execute(
+                        f"""
+                        SELECT id, name, content, encoding
+                        FROM documents
+                        WHERE id IN ({placeholders})
+                        """,
+                        batch,
+                    ).fetchall()
+                )
+            documents_by_id = {
+                row[0]: {
+                    "id": row[0],
+                    "name": row[1],
+                    "content": row[2],
+                    "encoding": row[3],
+                }
+                for row in missing_documents
+            }
+            with connection:
+                _store_document_graphs(
+                    connection,
+                    [documents_by_id[document_id] for document_id in missing_ids],
+                )
+            graph_rows.extend(
+                (
+                    document_id,
+                    serialize_document_graph(documents_by_id[document_id]),
+                )
+                for document_id in missing_ids
+            )
+
+    graph_rows.sort(key=lambda row: row[0])
+    return merge_document_graphs(
+        [json.loads(graph_json) for _, graph_json in graph_rows]
+    )
 
 
 def _load_indexed_chunks(document_ids: list[str]) -> tuple[list[dict], list[list[float]]]:

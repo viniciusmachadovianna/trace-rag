@@ -22,6 +22,7 @@ from app.ingestion.loader import load_pdf_pages_from_bytes
 from app.retrieval.vector_store import (
     MissingIndexedDocumentsError,
     delete_indexed_document,
+    get_indexed_document_graph,
     persist_documents,
     retrieve_relevant_chunks,
 )
@@ -65,6 +66,40 @@ class IndexRequest(BaseModel):
 
 class IndexResponse(BaseModel):
     indexed_chunks: int = Field(ge=0, description="Number of document chunks indexed.")
+
+
+class GraphNode(BaseModel):
+    id: str
+    label: str
+    type: Literal[
+        "document",
+        "knowledge_item",
+        "document_type",
+        "project",
+        "product",
+        "topic",
+        "tag",
+    ]
+
+
+class GraphEvidence(BaseModel):
+    document_id: str
+    document_name: str
+    title: str
+    source_url: str | None = None
+
+
+class GraphEdge(BaseModel):
+    id: str
+    source: str
+    target: str
+    label: Literal["contains", "type", "project", "product", "topic", "tag"]
+    evidence: list[GraphEvidence]
+
+
+class GraphResponse(BaseModel):
+    nodes: list[GraphNode]
+    edges: list[GraphEdge]
 
 
 def build_document_chunks(documents: list[IndexDocument]) -> list[dict]:
@@ -169,6 +204,29 @@ def health():
 @app.get("/documents")
 def list_repository_documents():
     return load_repository_documents()
+
+
+@app.get(
+    "/graph",
+    response_model=GraphResponse,
+    response_model_exclude_none=True,
+)
+def get_graph(
+    document_ids: list[str] | None = Query(
+        default=None,
+        description="Optional IDs of indexed documents to include in the graph.",
+    ),
+) -> GraphResponse:
+    if document_ids and any(not document_id.strip() for document_id in document_ids):
+        raise HTTPException(status_code=422, detail="Document IDs must not be empty.")
+
+    try:
+        return get_indexed_document_graph(document_ids)
+    except MissingIndexedDocumentsError as error:
+        raise HTTPException(
+            status_code=409,
+            detail="One or more requested documents are not indexed.",
+        ) from error
 
 
 @app.post("/index", response_model=IndexResponse)
