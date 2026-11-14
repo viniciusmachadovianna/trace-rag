@@ -12,14 +12,19 @@ from google import genai
 from google.genai import types
 from pypdf.errors import PdfReadError
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from app.generation.llm_client import ask_llm
 from app.config import frontend_origin
 from app.ingestion.chunker import chunk_text_by_words
 from app.ingestion.loader import load_pdf_pages_from_bytes
-from app.retrieval.vector_store import index_document_chunks, retrieve_relevant_chunks
+from app.retrieval.vector_store import (
+    MissingIndexedDocumentsError,
+    delete_indexed_document,
+    persist_documents,
+    retrieve_relevant_chunks,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -33,7 +38,8 @@ SUPPORTED_REPOSITORY_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".pdf"}
 load_dotenv()
 
 
-class AskDocument(BaseModel):
+class IndexDocument(BaseModel):
+    id: str = Field(min_length=1, description="Stable document ID from the knowledge base.")
     name: str = Field(min_length=1, description="Original document filename.")
     content: str = Field(description="Text content or base64-encoded PDF bytes.")
     encoding: Literal["text", "base64"] = Field(
@@ -44,14 +50,14 @@ class AskDocument(BaseModel):
 
 class AskRequest(BaseModel):
     question: str = Field(description="Question to answer.")
-    documents: list[AskDocument] = Field(
+    document_ids: list[str] = Field(
         default_factory=list,
-        description="Enabled knowledge-base documents to search for relevant context.",
+        description="IDs of previously indexed enabled documents to search.",
     )
 
 
 class IndexRequest(BaseModel):
-    documents: list[AskDocument] = Field(
+    documents: list[IndexDocument] = Field(
         default_factory=list,
         description="Enabled knowledge-base documents to index before questions are asked.",
     )
@@ -61,7 +67,7 @@ class IndexResponse(BaseModel):
     indexed_chunks: int = Field(ge=0, description="Number of document chunks indexed.")
 
 
-def build_document_chunks(documents: list[AskDocument]) -> list[dict]:
+def build_document_chunks(documents: list[IndexDocument]) -> list[dict]:
     chunks = []
     supported_extensions = {".txt", ".md", ".csv", ".json", ".pdf"}
 
@@ -96,6 +102,7 @@ def build_document_chunks(documents: list[AskDocument]) -> list[dict]:
                         "source": document.name,
                         "page": page["page"],
                         "chunk": chunk_index,
+                        "document_id": document.id,
                     }
                 )
 
@@ -140,7 +147,7 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=frontend_origin.split(","),
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Content-Type"],
 )
 
@@ -166,6 +173,10 @@ def list_repository_documents():
 
 @app.post("/index", response_model=IndexResponse)
 def index_documents(request: IndexRequest) -> IndexResponse:
+    document_ids = [document.id for document in request.documents]
+    if len(document_ids) != len(set(document_ids)):
+        raise HTTPException(status_code=422, detail="Document IDs must be unique.")
+
     try:
         chunks = build_document_chunks(request.documents)
     except ValueError as error:
@@ -178,7 +189,10 @@ def index_documents(request: IndexRequest) -> IndexResponse:
         )
 
     try:
-        indexed_chunks = index_document_chunks(chunks)
+        indexed_chunks = persist_documents(
+            [document.model_dump() for document in request.documents],
+            chunks,
+        )
     except Exception:
         logger.exception("Document indexing failed.")
         raise HTTPException(
@@ -187,6 +201,20 @@ def index_documents(request: IndexRequest) -> IndexResponse:
         ) from None
 
     return IndexResponse(indexed_chunks=indexed_chunks)
+
+
+@app.delete("/documents")
+def delete_document(document_id: str = Query(min_length=1)):
+    try:
+        delete_indexed_document(document_id)
+    except Exception:
+        logger.exception("Document deletion failed.")
+        raise HTTPException(
+            status_code=500,
+            detail="Document deletion failed. Check the local document database and retry.",
+        ) from None
+
+    return {"deleted": True}
 
 
 @app.get("/ready")
@@ -226,20 +254,14 @@ def ask(request: AskRequest):
     context = None
     sources = []
 
-    if request.documents:
+    if request.document_ids:
         try:
-            chunks = build_document_chunks(request.documents)
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
-
-        if not chunks:
+            relevant_chunks = retrieve_relevant_chunks(request.question, request.document_ids)
+        except MissingIndexedDocumentsError as error:
             raise HTTPException(
-                status_code=422,
-                detail="No readable text was found in the enabled documents. Scanned PDFs require OCR.",
-            )
-
-        try:
-            relevant_chunks = retrieve_relevant_chunks(request.question, chunks)
+                status_code=409,
+                detail="One or more enabled documents are not indexed. Reopen the app to index them and retry.",
+            ) from error
         except Exception:
             logger.exception("Document retrieval failed.")
             raise HTTPException(
