@@ -84,6 +84,8 @@
                     <img class="shield" src="assets/icons/verified.svg" alt="" width="16" height="16">
                 </div>
             </div>
+            <div class="sidebar-resize-handle" role="separator" aria-orientation="vertical" aria-label="Resize workspace sidebar"
+                data-i18n-aria="sidebar-resize" tabindex="0"></div>
         </aside>
 
         <main class="main-panel">
@@ -171,34 +173,49 @@
                 </form>
             </div>
         </main>
-
-        <aside class="assistant-panel" aria-label="Assistant panel">
-            <div class="panel-bar assistant-bar">
-                <button class="icon-button panel-toggle assistant-toggle" type="button"
-                    aria-label="Hide assistant panel" title="Hide assistant panel" data-i18n-aria="assistant-collapse"
-                    data-i18n-title="assistant-collapse">
-                    <img src="assets/icons/right_panel_close.svg" alt="Hide assistant panel" width="12" height="12">
+        <aside class="right-panel" aria-label="Data explorer panel" data-i18n-aria="right-panel-label">
+            <div class="panel-bar right-panel-bar">
+                <button class="icon-button panel-toggle right-panel-toggle" id="right-panel-toggle" type="button"
+                    aria-label="Hide data explorer panel" title="Hide data explorer panel"
+                    data-i18n-aria="right-panel-collapse" data-i18n-title="right-panel-collapse">
+                    <img src="assets/icons/right_panel_close.svg" alt="Hide data explorer panel" width="12" height="12">
                 </button>
-                <span data-i18n="assistant">ASSISTANT</span>
+                <span data-i18n="right-panel-title">DATA EXPLORER</span>
             </div>
-            <div class="assistant-copy">
+            <div class="right-panel-content">
+                <section class="right-panel-graph" id="right-panel-graph"
+                    aria-label="Entity relationship graph" data-i18n-aria="entity-graph-title">
+                    <button class="entity-graph-refresh" id="entity-graph-refresh" type="button"
+                        data-i18n="entity-graph-refresh">Refresh graph</button>
+                </section>
+                <section class="right-panel-preview" id="right-panel-preview"
+                    aria-label="Document preview" data-i18n-aria="document-preview-title"></section>
+            </div>
+        </aside>
+        <div class="assistant-copy" id="assistant-copy" hidden>
                 <div class="telemetry">
                     <div class="telemetry-title" data-i18n="system-telemetry">SYSTEM TELEMETRY</div>
                     <div class="metric"><span data-i18n="inference-engine">Inference engine</span><strong
                             data-i18n="not-connected">NOT CONNECTED</strong></div>
-                    <div class="metric"><span data-i18n="chunking-overlap">Chunking overlap</span><strong>15</strong>
+                    <div class="metric">
+                        <label for="adjustments-chunk-overlap" data-i18n="chunking-overlap">Chunking overlap</label>
+                        <input class="adjustments-input" id="adjustments-chunk-overlap" type="number" min="0" step="1" value="15">
                     </div>
-                    <div class="metric"><span data-i18n="lm-model">LM Model</span><strong
-                            data-i18n="gemini">Gemini</strong></div>
+                    <div class="metric">
+                        <label for="adjustments-model" data-i18n="lm-model">LM Model</label>
+                        <input class="adjustments-input" id="adjustments-model" type="text" value="Gemini">
+                    </div>
                     <div class="metric"><span data-i18n="knowledge-sources">Knowledge sources</span><strong
                             id="source-metric" data-i18n="source-metric">00 DOCUMENTS</strong></div>
-                    <div class="metric"><span data-i18n="conversation-memory">Conversation memory</span><strong
-                            data-i18n="local">LOCAL</strong></div>
+                    <div class="metric">
+                        <label for="adjustments-memory" data-i18n="conversation-memory">Conversation memory</label>
+                        <input class="adjustments-input" id="adjustments-memory" type="text" value="LOCAL">
+                    </div>
                     <div class="metric"><span data-i18n="retrieval-protocol">Retrieval protocol</span><strong
                             data-i18n="standby">STANDBY</strong></div>
                 </div>
 
-                <section class="document-preview" aria-labelledby="document-preview-title">
+                <section class="document-preview" id="assistant-document-preview" aria-labelledby="document-preview-title">
                     <div class="telemetry-title" id="document-preview-title" data-i18n="document-preview-title">
                         DOCUMENT PREVIEW
                     </div>
@@ -221,7 +238,6 @@
                 </div>
                 <p class="composer-footnote" data-i18n="composer-footnote"> Answers grounded in your documents. Decisions remain yours. </p>
             </div>
-        </aside>
     </div>
     <dialog class="knowledge-dialog" id="knowledge-dialog" aria-labelledby="knowledge-title">
         <div class="knowledge-dialog-header">
@@ -316,7 +332,7 @@
             <div>
                 <h2 id="adjustments-title" data-i18n="adjustments-title">Adjustments</h2>
                 <p id="adjustments-description" data-i18n="adjustments-description">
-                    Configure how the assistant retrieves information for your responses.
+                    Adjust assistant parameters and review current system status.
                 </p>
             </div>
             <button class="knowledge-close" id="adjustments-close" type="button" aria-label="Close adjustments"

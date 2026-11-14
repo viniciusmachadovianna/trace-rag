@@ -2,6 +2,7 @@ import { applyTheme } from './theme.js';
 import { applyLanguage, getCurrentLanguage, initializeLanguage, t } from './language.js';
 import { clearChat, initializeChat, cancelPendingResponse } from './chat.js';
 import { initializeKnowledgeBase } from './knowledge-base.js';
+import { initializeEntityGraph } from './entity-graph.js';
 import { $ } from './utils.js';
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -17,13 +18,29 @@ let toastTimeout;
 const informationModal = $('.information-modal');
 const informationDialog = $('#information-dialog');
 const informationClose = $('#information-close');
+const adjustmentsToggle = $('#adjustments-toggle');
+const adjustmentsDialog = $('#adjustments-dialog');
+const adjustmentsClose = $('#adjustments-close');
+const adjustmentsRetrievalMode = $('#adjustments-retrieval-mode');
+const assistantCopy = $('#assistant-copy');
+const entityGraphDialog = $('#entity-graph-dialog');
+$('#right-panel-preview').append($('#assistant-document-preview'));
+const entityGraphHeader = entityGraphDialog.querySelector('.knowledge-dialog-header');
+entityGraphHeader.querySelector('#entity-graph-close').remove();
+entityGraphHeader.remove();
+$('#right-panel-graph').append(entityGraphHeader, $('#entity-graph-refresh'), ...entityGraphDialog.children);
+entityGraphDialog.remove();
+adjustmentsDialog.append(assistantCopy);
+assistantCopy.hidden = false;
 
 const sidebar = $('.sidebar');
-const assistantPanel = $('.assistant-panel');
 const sidebarToggle = $('.sidebar-toggle');
 const sidebarToggleIcon = sidebarToggle.querySelector('img');
-const assistantToggle = $('.assistant-toggle');
-const assistantToggleIcon = assistantToggle.querySelector('img');
+const sidebarResizeHandle = $('.sidebar-resize-handle');
+const rightPanel = $('.right-panel');
+const rightPanelToggle = $('.right-panel-toggle');
+const rightPanelToggleIcon = rightPanelToggle.querySelector('img');
+if (window.matchMedia('(max-width: 800px)').matches) rightPanel.classList.add('is-collapsed');
 
 const conversationList = $('.sidebar-top');
 const conversationCount = $('#conversation-count');
@@ -39,6 +56,7 @@ let conversationPendingDeletion;
 function updateRetrievalModeIcon() {
     const icon = retrievalMode.selectedOptions[0]?.dataset.icon;
     if (icon) retrievalModeIcon.src = icon;
+    adjustmentsRetrievalMode.value = retrievalMode.value;
 }
 
 export function showToast(message) {
@@ -50,19 +68,20 @@ export function showToast(message) {
 
 function syncSidebarState() {
     const leftHidden = sidebar.classList.contains('is-collapsed');
-    const rightHidden = assistantPanel.classList.contains('is-collapsed');
+    const rightHidden = rightPanel.classList.contains('is-collapsed');
     appShell.classList.toggle('sidebar-collapsed', leftHidden);
-    appShell.classList.toggle('assistant-collapsed', rightHidden);
+    appShell.classList.toggle('right-panel-collapsed', rightHidden);
+    sidebarResizeHandle.hidden = leftHidden;
 
     sidebarToggle.dataset.i18nAria = leftHidden ? 'sidebar-expand' : 'sidebar-collapse';
     sidebarToggle.dataset.i18nTitle = leftHidden ? 'sidebar-expand' : 'sidebar-collapse';
-    assistantToggle.dataset.i18nAria = rightHidden ? 'assistant-expand' : 'assistant-collapse';
-    assistantToggle.dataset.i18nTitle = rightHidden ? 'assistant-expand' : 'assistant-collapse';
+    rightPanelToggle.dataset.i18nAria = rightHidden ? 'right-panel-expand' : 'right-panel-collapse';
+    rightPanelToggle.dataset.i18nTitle = rightHidden ? 'right-panel-expand' : 'right-panel-collapse';
 
     sidebarToggleIcon.src = leftHidden ? 'assets/icons/left_panel_open.svg' : 'assets/icons/left_panel_close.svg';
     sidebarToggleIcon.alt = leftHidden ? 'Show workspace sidebar' : 'Hide workspace sidebar';
-    assistantToggleIcon.src = rightHidden ? 'assets/icons/right_panel_open.svg' : 'assets/icons/right_panel_close.svg';
-    assistantToggleIcon.alt = rightHidden ? 'Show assistant panel' : 'Hide assistant panel';
+    rightPanelToggleIcon.src = rightHidden ? 'assets/icons/right_panel_open.svg' : 'assets/icons/right_panel_close.svg';
+    rightPanelToggleIcon.alt = rightHidden ? 'Show data explorer panel' : 'Hide data explorer panel';
 
     applyLanguage(getCurrentLanguage());
 }
@@ -173,19 +192,101 @@ const knowledgeBase = initializeKnowledgeBase({
     onIndexingState: chat.setKnowledgeIndexStatus
 });
 chat.setRetryKnowledgeIndex(knowledgeBase.retryIndexing);
+initializeEntityGraph();
 
 sidebarToggle.addEventListener('click', () => {
     sidebar.classList.toggle('is-collapsed');
     syncSidebarState();
 });
 
-assistantToggle.addEventListener('click', () => {
-    assistantPanel.classList.toggle('is-collapsed');
+rightPanelToggle.addEventListener('click', () => {
+    rightPanel.classList.toggle('is-collapsed');
     syncSidebarState();
+});
+
+function getSidebarWidthBounds() {
+    const compactLayout = window.matchMedia('(max-width: 800px)').matches;
+    const narrowLayout = window.matchMedia('(max-width: 1050px)').matches;
+    const minimumMainWidth = compactLayout ? 0 : narrowLayout ? 380 : 420;
+    const rightPanelWidth = compactLayout
+        ? 32
+        : rightPanel.classList.contains('is-collapsed')
+            ? 32
+            : narrowLayout ? 260 : 306;
+    const defaultWidth = compactLayout ? 190 : narrowLayout ? 205 : 232;
+    const minimum = 160;
+    const maximum = Math.max(defaultWidth, minimum, Math.min(420, appShell.clientWidth - minimumMainWidth - rightPanelWidth));
+    return { minimum, maximum };
+}
+
+function setSidebarWidth(width, bounds = getSidebarWidthBounds()) {
+    const { minimum, maximum } = bounds;
+    const boundedWidth = Math.round(Math.min(maximum, Math.max(minimum, width)));
+    appShell.style.setProperty('--sidebar-width', `${boundedWidth}px`);
+    sidebarResizeHandle.setAttribute('aria-valuemin', String(minimum));
+    sidebarResizeHandle.setAttribute('aria-valuemax', String(maximum));
+    sidebarResizeHandle.setAttribute('aria-valuenow', String(boundedWidth));
+}
+
+let sidebarWidthAdjusted = false;
+
+function updateSidebarResizeHandle() {
+    const width = sidebar.getBoundingClientRect().width;
+    const { minimum, maximum } = getSidebarWidthBounds();
+    sidebarResizeHandle.setAttribute('aria-valuemin', String(minimum));
+    sidebarResizeHandle.setAttribute('aria-valuemax', String(maximum));
+    sidebarResizeHandle.setAttribute('aria-valuenow', String(Math.round(width)));
+}
+
+sidebarResizeHandle.addEventListener('pointerdown', (event) => {
+    if (!event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = sidebar.getBoundingClientRect().width;
+    const widthBounds = getSidebarWidthBounds();
+    appShell.classList.add('is-resizing');
+    sidebarResizeHandle.setPointerCapture(event.pointerId);
+
+    const resize = (pointerEvent) => {
+        if (pointerEvent.pointerId === event.pointerId) {
+            sidebarWidthAdjusted = true;
+            setSidebarWidth(startWidth + pointerEvent.clientX - startX, widthBounds);
+        }
+    };
+    const stopResizing = (pointerEvent) => {
+        if (pointerEvent.pointerId !== event.pointerId) return;
+        sidebarResizeHandle.removeEventListener('pointermove', resize);
+        sidebarResizeHandle.removeEventListener('pointerup', stopResizing);
+        sidebarResizeHandle.removeEventListener('pointercancel', stopResizing);
+        appShell.classList.remove('is-resizing');
+    };
+
+    sidebarResizeHandle.addEventListener('pointermove', resize);
+    sidebarResizeHandle.addEventListener('pointerup', stopResizing);
+    sidebarResizeHandle.addEventListener('pointercancel', stopResizing);
+});
+
+sidebarResizeHandle.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    event.preventDefault();
+    const currentWidth = sidebar.getBoundingClientRect().width;
+    const direction = event.key === 'ArrowRight' ? 1 : -1;
+    sidebarWidthAdjusted = true;
+    setSidebarWidth(currentWidth + direction * (event.shiftKey ? 30 : 10));
+});
+
+updateSidebarResizeHandle();
+window.addEventListener('resize', () => {
+    if (sidebarWidthAdjusted) setSidebarWidth(sidebar.getBoundingClientRect().width);
+    updateSidebarResizeHandle();
 });
 
 syncSidebarState();
 retrievalMode.addEventListener('change', updateRetrievalModeIcon);
+adjustmentsRetrievalMode.addEventListener('change', () => {
+    retrievalMode.value = adjustmentsRetrievalMode.value;
+    retrievalMode.dispatchEvent(new Event('change'));
+});
 updateRetrievalModeIcon();
 
 conversationDeleteCancel.addEventListener('click', () => conversationDeleteDialog.close());
@@ -299,4 +400,17 @@ informationClose.addEventListener('click', () => {
 
 informationDialog.addEventListener('click', (event) => {
     if (event.target === informationDialog) informationDialog.close();
+});
+
+adjustmentsToggle.addEventListener('click', () => {
+    adjustmentsDialog.showModal();
+    adjustmentsRetrievalMode.focus();
+});
+
+adjustmentsClose.addEventListener('click', () => {
+    adjustmentsDialog.close();
+});
+
+adjustmentsDialog.addEventListener('click', (event) => {
+    if (event.target === adjustmentsDialog) adjustmentsDialog.close();
 });
