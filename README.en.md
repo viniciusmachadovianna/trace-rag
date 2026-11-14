@@ -15,6 +15,7 @@ Capabilities:
 - Automatically list supported documents from `data/` in the knowledge base, disabled by default.
 - Minimize hallucinations.
 - Present the sources and relationships used to construct the answer to the user.
+- Visualize metadata relationships between enabled knowledge-base documents.
 
 ## Architecture
 
@@ -37,6 +38,7 @@ When the interface loads, it syncs enabled documents to the backend for indexing
 - **Backend:** Python
 - **LLM:** Gemini (API)
 - **Vector Storage:** Local SQLite (`backend/data/vectors.sqlite3`)
+- **Graph Visualization:** Locally bundled vis-network 10.1.5
 
 ## API endpoints
 
