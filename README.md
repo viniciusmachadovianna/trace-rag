@@ -31,16 +31,18 @@ O sistema permite:
 5. Na raiz do repositório, configure `LLM_API_KEY` e `LLM_MODEL_ID` no arquivo `.env`. Use o arquivo `env.example` como referência.
 6. Em um terminal na raiz do repositório, entre na pasta `backend` com `cd backend` e inicie o backend com `python -m uvicorn app.main:app --reload`. O caminho `app.main:app` é necessário porque os módulos do backend importam a partir de `app`.
 7. Em outro terminal, inicie o servidor da interface na pasta `frontend` com `python -m http.server 5500` e abra `http://localhost:5500` no navegador.
-8. O chat envia uma requisição `POST` para `http://127.0.0.1:8000/ask` com a pergunta e os documentos habilitados na base de conhecimento. A API retorna a resposta como uma string JSON.
+8. Ao carregar a interface, os documentos habilitados são sincronizados com o backend para armazenamento e indexação. O chat envia `POST http://127.0.0.1:8000/ask` com a pergunta e os IDs dos documentos; a API retorna a resposta como uma string JSON.
 9. Ao terminar, encerre o ambiente virtual com `deactivate`.
 
-Ao carregar a interface, os documentos habilitados são enviados ao backend e indexados antes de liberar o chat. O status mostra esse carregamento; se falhar, use **Verificar novamente**. Os trechos e embeddings ficam armazenados localmente em `backend/data/vectors.sqlite3`. Trechos inalterados reutilizam os vetores existentes; a geração de embeddings e respostas continua dependendo da API Gemini.
+Ao carregar a interface, os documentos habilitados são sincronizados e indexados antes de liberar o chat. O backend local persiste o conteúdo original, os trechos e os embeddings em `backend/data/vectors.sqlite3`. O Live Server deve ignorar a pasta `backend/` para que alterações no banco não recarreguem a página. Depois da sincronização, cada pergunta envia somente os IDs dos documentos, não o conteúdo completo. O status mostra o carregamento; se falhar, use **Verificar novamente**. A geração de embeddings e respostas continua dependendo da API Gemini.
 
 ## Endpoints
 
 - `GET /ready`: verifica a configuração e a disponibilidade do modelo ao iniciar e após falhas nas perguntas. Apenas verificações *bem-sucedidas* ficam em cache por 15 segundos. Use `GET /ready?refresh=true` para ignorar o cache. Se o modelo estiver indisponível, o envio de perguntas é bloqueado até a conexão ser restabelecida.
 - `GET /health`: verifica se o backend está ativo. As chamadas ao modelo expiram após 45 segundos.
-- `POST /index`: recebe `{"documents": [...]}` no mesmo formato de `/ask`, divide os documentos habilitados em trechos e persiste os embeddings antes das perguntas. Retorna `{"indexed_chunks": n}`; responde `422` para documentos inválidos ou sem texto legível e `502` se a API de embeddings falhar. A interface chama esse endpoint ao iniciar e quando a base é alterada.
+- `POST /index`: recebe `{"documents": [{"id": "...", "name": "...", "content": "...", "encoding": "text"}]}`, divide os documentos habilitados em trechos e persiste originais, trechos e embeddings. Retorna `{"indexed_chunks": n}`; responde `422` para documentos inválidos ou sem texto legível e `502` se a API de embeddings falhar. A interface chama esse endpoint ao iniciar e quando a base é alterada.
+- `POST /ask`: recebe `{"question": "...", "document_ids": [...]}` e recupera os trechos já armazenados; documentos inexistentes ou ainda não indexados resultam em `409`.
+- `DELETE /documents?document_id=...`: remove do banco local o documento, seus trechos e vetores associados.
 
 ## Arquitetura
 

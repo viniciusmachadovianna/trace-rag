@@ -27,9 +27,9 @@ frontend/ <br>
 ├── style/ <br>
 └── script/ <br>
 
-Document chunks and their embeddings are persisted locally in `backend/data/vectors.sqlite3`. Embeddings for unchanged chunks are reused across questions; generating embeddings and answers still requires the Gemini API.
+The local backend persists original documents, chunks, and embeddings in `backend/data/vectors.sqlite3`. Configure Live Server to ignore `backend/` so database changes do not reload the page. After synchronization, questions send only document IDs instead of full contents. Gemini is still required to generate embeddings and answers.
 
-When the interface loads, it sends enabled documents to the backend for indexing before enabling chat. The status indicator shows this initial loading; use **Retry check** if indexing fails.
+When the interface loads, it syncs enabled documents to the backend for indexing before enabling chat. The status indicator shows this initial loading; use **Retry check** if indexing fails.
 
 ## Stack
 
@@ -40,7 +40,9 @@ When the interface loads, it sends enabled documents to the backend for indexing
 
 ## API endpoints
 
-- `POST /index`: accepts `{"documents": [...]}` using the same document shape as `/ask`, chunks enabled documents, and persists their embeddings before questions. Returns `{"indexed_chunks": n}`; responds with `422` for invalid documents or documents without readable text, and `502` if the embedding API fails. The interface calls it on startup and when the knowledge base changes.
+- `POST /index`: accepts `{"documents": [{"id": "...", "name": "...", "content": "...", "encoding": "text"}]}`, chunks enabled documents, and persists originals, chunks, and embeddings. Returns `{"indexed_chunks": n}`; responds with `422` for invalid documents or documents without readable text, and `502` if the embedding API fails. The interface calls it on startup and when the knowledge base changes.
+- `POST /ask`: accepts `{"question": "...", "document_ids": [...]}` and retrieves stored chunks; missing or unindexed documents return `409`.
+- `DELETE /documents?document_id=...`: removes a document, its chunks, and its associated vectors from the local database.
 
 ## Evaluation Methodology
 
