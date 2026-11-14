@@ -83,6 +83,19 @@ function removeDocument(id) {
     return runTransaction('readwrite', (store) => store.delete(id));
 }
 
+async function removeIndexedDocument(id) {
+    const response = await fetch(
+        `http://127.0.0.1:8000/documents?document_id=${encodeURIComponent(id)}`,
+        { method: 'DELETE' }
+    );
+    const result = await response.json();
+    if (!response.ok) {
+        throw new Error(typeof result.detail === 'string'
+            ? result.detail
+            : `Response status: ${response.status}`);
+    }
+}
+
 async function synchronizeRepositoryDocuments() {
     const response = await fetch('http://127.0.0.1:8000/documents');
     const repositoryDocuments = await response.json();
@@ -130,6 +143,12 @@ async function synchronizeRepositoryDocuments() {
 
     for (const [id] of storedRepositoryDocuments) {
         if (!currentIds.has(id)) {
+            try {
+                await removeIndexedDocument(id);
+            } catch (error) {
+                console.error('Could not remove a deleted repository document from the backend:', error);
+                throw new Error(t('document-backend-delete-error'));
+            }
             await removeDocument(id);
             changed = true;
         }
@@ -167,7 +186,8 @@ export async function getEnabledDocuments() {
     const documents = await getDocuments();
     return documents
         .filter((document) => document.enabled)
-        .map(({ name, content, encoding }) => ({
+        .map(({ id, name, content, encoding }) => ({
+            id,
             name,
             content,
             encoding: encoding ?? 'text'
@@ -473,11 +493,13 @@ export function initializeKnowledgeBase({ showToast, onIndexingState = () => {} 
         if (!row) return;
 
         try {
+            await removeIndexedDocument(row.dataset.documentId);
             await removeDocument(row.dataset.documentId);
             await refreshDocuments({ index: true });
             showToast(t('document-deleted'));
         } catch (error) {
-            reportStorageError(error, showToast);
+            console.error('Could not delete the document from the local knowledge base:', error);
+            showToast(t('document-backend-delete-error'));
         }
     });
 

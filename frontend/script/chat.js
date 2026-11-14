@@ -62,11 +62,11 @@ export function clearChat() {
     updateScrollCue();
 }
 
-async function ask(question, documents, signal) {
+async function ask(question, documentIds, signal) {
     const response = await fetch('http://127.0.0.1:8000/ask', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question, documents }),
+        body: JSON.stringify({ question, document_ids: documentIds }),
         signal
     });
 
@@ -262,7 +262,8 @@ export function initializeChat({ onEmptyExport }) {
 
         try {
             const documents = await getEnabledDocuments();
-            const answer = await ask(message, documents, controller.signal);
+            const documentIds = documents.map((document) => document.id);
+            const answer = await ask(message, documentIds, controller.signal);
             if (controller.signal.aborted) return;
             markBackendReady();
             addMessage('SS-800 / SYSTEM', answer, 'assistant-reply');
