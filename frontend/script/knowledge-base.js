@@ -97,7 +97,7 @@ async function removeIndexedDocument(id) {
 }
 
 async function synchronizeRepositoryDocuments() {
-    const response = await fetch('http://127.0.0.1:8000/documents');
+    const response = await fetch('http://127.0.0.1:8000/documents?include_chunk_counts=true');
     const repositoryDocuments = await response.json();
     if (!response.ok) {
         throw new Error(typeof repositoryDocuments.detail === 'string'
@@ -110,6 +110,7 @@ async function synchronizeRepositoryDocuments() {
         || typeof document.name !== 'string'
         || typeof document.content !== 'string'
         || !['text', 'base64'].includes(document.encoding)
+        || (document.chunk_count !== undefined && (!Number.isInteger(document.chunk_count) || document.chunk_count < 0))
     ))) {
         throw new Error('The API returned an invalid repository document list.');
     }
@@ -126,18 +127,21 @@ async function synchronizeRepositoryDocuments() {
     for (const document of repositoryDocuments) {
         currentIds.add(document.id);
         const storedDocument = storedRepositoryDocuments.get(document.id);
+        const chunkCount = Number.isInteger(document.chunk_count) ? document.chunk_count : storedDocument?.chunk_count ?? 0;
         if (
             !storedDocument
             || storedDocument.name !== document.name
             || storedDocument.content !== document.content
             || storedDocument.encoding !== document.encoding
+            || storedDocument.chunk_count !== chunkCount
         ) {
             changed = true;
         }
         await saveDocument({
             ...document,
             source: 'repository',
-            enabled: storedDocument?.enabled ?? false
+            enabled: storedDocument?.enabled ?? false,
+            chunk_count: chunkCount
         });
     }
 
@@ -195,7 +199,7 @@ export async function getEnabledDocuments() {
 }
 
 async function requestDocumentIndex(documents) {
-    const response = await fetch('http://127.0.0.1:8000/index', {
+    const response = await fetch('http://127.0.0.1:8000/index?include_chunk_counts=true', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ documents })
@@ -210,8 +214,28 @@ async function requestDocumentIndex(documents) {
     if (!Number.isInteger(result.indexed_chunks) || result.indexed_chunks < 0) {
         throw new Error('The API returned an invalid document indexing result.');
     }
+    if (result.chunk_counts !== undefined && (typeof result.chunk_counts !== 'object' || result.chunk_counts === null)) {
+        throw new Error('The API returned an invalid chunk count payload.');
+    }
 
     return result;
+}
+
+async function updateDocumentChunkCounts(documents, chunkCounts = {}) {
+    if (!documents.length) return;
+
+    const storedDocuments = new Map(
+        (await getDocuments()).map((document) => [document.id, document])
+    );
+    for (const document of documents) {
+        const count = Number(chunkCounts[document.id]);
+        if (!Number.isInteger(count) || count < 0) continue;
+        const storedDocument = storedDocuments.get(document.id);
+        if (!storedDocument) {
+            throw new Error(`Could not find document ${document.id} while updating its chunk count.`);
+        }
+        await saveDocument({ ...storedDocument, chunk_count: count });
+    }
 }
 
 function formatSummary(count) {
@@ -238,10 +262,20 @@ function createDocumentRow(document) {
     icon.alt = '';
     icon.setAttribute('aria-hidden', 'true');
 
+    const copy = documentList.ownerDocument.createElement('div');
+    copy.className = 'knowledge-document-copy';
+
     const name = documentList.ownerDocument.createElement('span');
     name.className = 'knowledge-document-name';
     name.textContent = document.name;
     name.title = document.name;
+
+    const metadata = documentList.ownerDocument.createElement('span');
+    metadata.className = 'knowledge-document-meta';
+    const chunkCount = Number(document.chunk_count ?? 0);
+    metadata.textContent = `${chunkCount} chunk${chunkCount === 1 ? '' : 's'}`;
+
+    copy.append(name, metadata);
 
     const toggleLabel = documentList.ownerDocument.createElement('label');
     toggleLabel.className = 'knowledge-switch';
@@ -254,7 +288,7 @@ function createDocumentRow(document) {
     toggleTrack.setAttribute('aria-hidden', 'true');
     toggleLabel.append(toggle, toggleTrack);
 
-    row.append(icon, name, toggleLabel);
+    row.append(icon, copy, toggleLabel);
     if (document.source !== 'repository') {
         const deleteButton = documentList.ownerDocument.createElement('button');
         deleteButton.className = 'knowledge-delete';
@@ -363,6 +397,8 @@ export function initializeKnowledgeBase({ showToast, onIndexingState = () => {} 
         try {
             const documents = await getEnabledDocuments();
             const result = await requestDocumentIndex(documents);
+            await updateDocumentChunkCounts(documents, result.chunk_counts ?? {});
+            await renderDocuments();
             if (requestId === indexRequestId) onIndexingState('ready');
             return result;
         } catch (error) {

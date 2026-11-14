@@ -102,6 +102,26 @@ class GraphResponse(BaseModel):
     edges: list[GraphEdge]
 
 
+def count_document_chunks(document: IndexDocument | dict) -> int:
+    document_data = document.model_dump() if isinstance(document, IndexDocument) else document
+    extension = Path(document_data["name"]).suffix.lower()
+    if extension not in {".txt", ".md", ".csv", ".json", ".pdf"}:
+        return 0
+
+    pages = []
+    if extension == ".pdf":
+        if document_data.get("encoding") != "base64":
+            return 0
+        pdf_content = base64.b64decode(document_data["content"], validate=True)
+        pages = load_pdf_pages_from_bytes(pdf_content)
+    else:
+        if document_data.get("encoding") != "text":
+            return 0
+        pages = [{"page": None, "text": document_data["content"]}]
+
+    return sum(len(chunk_text_by_words(page["text"])) for page in pages)
+
+
 def build_document_chunks(documents: list[IndexDocument]) -> list[dict]:
     chunks = []
     supported_extensions = {".txt", ".md", ".csv", ".json", ".pdf"}
@@ -144,7 +164,7 @@ def build_document_chunks(documents: list[IndexDocument]) -> list[dict]:
     return chunks
 
 
-def load_repository_documents() -> list[dict]:
+def load_repository_documents(include_chunk_counts: bool = False) -> list[dict]:
     data_directory = DATA_DIRECTORY.resolve()
     documents = []
 
@@ -166,14 +186,15 @@ def load_repository_documents() -> list[dict]:
             content = resolved_path.read_text(encoding="utf-8")
             encoding = "text"
 
-        documents.append(
-            {
-                "id": f"repository:{name}",
-                "name": name,
-                "content": content,
-                "encoding": encoding,
-            }
-        )
+        document = {
+            "id": f"repository:{name}",
+            "name": name,
+            "content": content,
+            "encoding": encoding,
+        }
+        if include_chunk_counts:
+            document["chunk_count"] = count_document_chunks(document)
+        documents.append(document)
 
     return documents
 
@@ -202,8 +223,8 @@ def health():
 
 
 @app.get("/documents")
-def list_repository_documents():
-    return load_repository_documents()
+def list_repository_documents(include_chunk_counts: bool = Query(default=False)):
+    return load_repository_documents(include_chunk_counts=include_chunk_counts)
 
 
 @app.get(
@@ -229,8 +250,8 @@ def get_graph(
         ) from error
 
 
-@app.post("/index", response_model=IndexResponse)
-def index_documents(request: IndexRequest) -> IndexResponse:
+@app.post("/index")
+def index_documents(request: IndexRequest, include_chunk_counts: bool = Query(default=False)):
     document_ids = [document.id for document in request.documents]
     if len(document_ids) != len(set(document_ids)):
         raise HTTPException(status_code=422, detail="Document IDs must be unique.")
@@ -258,7 +279,13 @@ def index_documents(request: IndexRequest) -> IndexResponse:
             detail="Document indexing failed. Check the embedding model connection and retry.",
         ) from None
 
-    return IndexResponse(indexed_chunks=indexed_chunks)
+    response = {"indexed_chunks": indexed_chunks}
+    if include_chunk_counts:
+        response["chunk_counts"] = {
+            document.id: sum(1 for chunk in chunks if chunk["document_id"] == document.id)
+            for document in request.documents
+        }
+    return response
 
 
 @app.delete("/documents")
